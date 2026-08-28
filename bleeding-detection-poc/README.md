@@ -6,7 +6,7 @@ This project runs pretrained NeuFlow v2 on video inside a fixed region of intere
 
 For every consecutive frame pair, the fixed bounding box is cropped from the original frame **before** NeuFlow inference. The two crops are resized to NeuFlow's configured input size, inferred, and the dense flow is resized back to the original crop size with separate horizontal and vertical displacement scaling. Flow uses `H x W x 2` arrays where `flow[..., 0]` is `dx` rightward and `flow[..., 1]` is `dy` downward.
 
-The dashboard MP4 shows the full source frame with its ROI, then the cropped ROI, HSV optical flow, magnitude map, and candidate mask. Hue encodes direction; saturation/value increase with flow magnitude. Candidate mask pixels satisfy the configured magnitude threshold, optionally with the configured directional-alignment threshold. This is candidate motion only, not a confirmed event or class prediction.
+The dashboard MP4 shows the full source frame with its ROI, then the cropped ROI, HSV optical flow, magnitude map, the dark-red blood colour mask, the frame-to-frame darkening mask, and the candidate blood mask. Hue encodes direction; saturation/value increase with flow magnitude. Candidate mask pixels satisfy the configured magnitude threshold and directional-alignment threshold, and must also look like blood: red hue, saturated, darker than surrounding tissue, and darkening relative to the previous frame. Instruments are rejected by these appearance gates rather than by a motion heuristic. This is candidate motion only, not a confirmed event or class prediction.
 
 When compatible CVAT inputs are supplied, the yellow rectangle is the one fixed NeuFlow crop for the selected interval. Annotated regions can gate the candidate mask, while context shapes can be displayed on the output. These annotations guide visualization and ROI selection only; they are not used to calculate accuracy.
 
@@ -56,7 +56,7 @@ Place a compatible NeuFlow checkpoint at the path configured by `checkpoint.path
 
 Edit the trial configuration to set the fixed `roi.bbox` in original-frame pixels. It must be fully inside the source video frame and remains unchanged for every frame pair. Configure the NeuFlow resize resolution in the model configuration; both dimensions must be divisible by 16.
 
-Set the candidate magnitude threshold, optional downward gravity vector, minimum alignment, visualization magnitude clip, and overlay opacity in the trial config.
+Set the candidate magnitude threshold, optional downward gravity vector, minimum alignment, visualization magnitude clip, and overlay opacity in the trial config. The `scoring.blood_appearance` block controls the blood gates: `color` sets the red hue margin, minimum saturation, and maximum brightness that define dark red, while `darkening` sets how much a pixel must dim between frames to count as newly covered by blood. Raise `color.maximum_value` if bright arterial blood is being dropped; raise `color.minimum_saturation` if desaturated tissue leaks through.
 
 ## Run
 

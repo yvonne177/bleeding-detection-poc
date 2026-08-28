@@ -74,8 +74,8 @@ def render_dashboard(
     roi: np.ndarray,
     flow_bgr: np.ndarray,
     magnitude_bgr: np.ndarray,
-    instrument_mask_bgr: np.ndarray,
-    flow_suppressed_bgr: np.ndarray,
+    color_mask_bgr: np.ndarray,
+    darkened_mask_bgr: np.ndarray,
     mask: np.ndarray,
     bbox: BoundingBox,
 ) -> np.ndarray:
@@ -84,14 +84,14 @@ def render_dashboard(
     panel_height = max(1, panel_height // 3)
     panel_width = panel_width // 3
     mask_bgr = mask_to_bgr(mask)
-    panels = [roi, flow_bgr, magnitude_bgr, instrument_mask_bgr, flow_suppressed_bgr, mask_bgr]
+    panels = [roi, flow_bgr, magnitude_bgr, color_mask_bgr, darkened_mask_bgr, mask_bgr]
     labels = [
         "Cropped ROI",
         "NeuFlow v2 (raw)",
         "Raw magnitude",
-        "Instrument mask",
-        "Flow after suppression",
-        "Candidate mask",
+        "Dark-red blood color",
+        "Frame-to-frame darkening",
+        "Candidate blood mask",
     ]
     rendered = []
     for panel, label in zip(panels, labels):

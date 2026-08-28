@@ -7,17 +7,23 @@ roi:
     height: 500
 
 scoring:
-  magnitude_threshold: 2.0
-  instrument_suppression:
-    enabled: false
-    # Flow pixels at/above this magnitude are treated as instrument motion and zeroed
-    # out before the candidate mask is built. Must stay above liquid_motion_threshold.
-    instrument_motion_threshold: 4.0
-    # Candidate threshold applied to flow once instrument suppression is enabled.
-    liquid_motion_threshold: 0.5
-    dilation_kernel_size: 5
-    # Number of recent frames (including current) unioned into the instrument mask.
-    persistence_frames: 1
+  # Running blood is slow compared with instruments, so keep this low and rely on the
+  # appearance gates below to reject fast, non-red motion.
+  magnitude_threshold: 0.5
+  blood_appearance:
+    color:
+      enabled: true
+      # OpenCV HSV hue is 0-179 and red wraps, so pixels within this margin of 0 or 180 pass.
+      hue_margin: 12.0
+      minimum_saturation: 90.0
+      # Darker red than perfused tissue is the main separator; raise to admit brighter blood.
+      maximum_value: 150.0
+      opening_kernel_size: 3
+    darkening:
+      enabled: true
+      # Minimum HSV value drop versus the previous frame for a pixel to count as newly covered by blood.
+      minimum_value_drop: 2.0
+      blur_kernel_size: 5
   gravity:
     enabled: true
     vector:

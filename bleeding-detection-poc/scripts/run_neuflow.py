@@ -17,12 +17,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.flow.neuflow_v2 import NeuFlowV2Estimator
 from src.preprocessing.bbox_crop import BoundingBox
 from src.preprocessing.cvat_annotations import CvatAnnotations
+from src.scoring.blood_appearance import blood_color_mask, darkening_mask
 from src.scoring.gravity_alignment import gravity_alignment
-from src.scoring.instrument_suppression import (
-    InstrumentMaskTracker,
-    instrument_mask_from_magnitude,
-    suppress_instrument_flow,
-)
 from src.scoring.magnitude_score import candidate_mask, flow_magnitude
 from src.visualization.render_video import (
     draw_cvat_context,
@@ -136,9 +132,9 @@ def main() -> None:
     scoring = trial_config["scoring"]
     visualization = trial_config["visualization"]
     magnitude_clip = float(visualization["flow_magnitude_clip"])
-    instrument_config = scoring.get("instrument_suppression", {})
-    instrument_suppression_enabled = bool(instrument_config.get("enabled", False))
-    instrument_tracker = InstrumentMaskTracker(int(instrument_config.get("persistence_frames", 1)))
+    blood_config = scoring.get("blood_appearance", {})
+    color_config = blood_config.get("color", {})
+    darkening_config = blood_config.get("darkening", {})
 
     capture = cv2.VideoCapture(str(args.input))
     if not capture.isOpened():
@@ -208,28 +204,34 @@ def main() -> None:
             latencies_ms.append((time.perf_counter() - started) * 1000.0)
             processed_frames += 1
 
-        # Preserve the raw NeuFlow flow/magnitude; only a suppressed copy feeds the candidate mask.
         magnitude = flow_magnitude(flow)
-        instrument_mask = np.zeros(magnitude.shape, dtype=bool)
-        flow_suppressed = flow
-        if instrument_suppression_enabled:
-            fast_mask = instrument_mask_from_magnitude(
-                magnitude,
-                float(instrument_config.get("instrument_motion_threshold", 4.0)),
-                int(instrument_config.get("dilation_kernel_size", 5)),
-            )
-            instrument_mask = instrument_tracker.update(fast_mask)
-            flow_suppressed = suppress_instrument_flow(flow, instrument_mask)
-            liquid_threshold = float(instrument_config.get("liquid_motion_threshold", scoring["magnitude_threshold"]))
-        else:
-            liquid_threshold = float(scoring["magnitude_threshold"])
-        magnitude_suppressed = flow_magnitude(flow_suppressed)
-        mask = candidate_mask(magnitude_suppressed, liquid_threshold)
+        mask = candidate_mask(magnitude, float(scoring["magnitude_threshold"]))
         gravity = scoring.get("gravity", {})
         if gravity.get("enabled", False):
             vector = gravity["vector"]
-            alignment = gravity_alignment(flow_suppressed, float(vector["x"]), float(vector["y"]))
+            alignment = gravity_alignment(flow, float(vector["x"]), float(vector["y"]))
             mask &= alignment >= float(gravity["minimum_alignment"])
+
+        # Appearance gates keep dark-red bleeding and reject instruments, which move fast but are never dark red.
+        color_mask = np.zeros(magnitude.shape, dtype=bool)
+        if color_config.get("enabled", False):
+            color_mask = blood_color_mask(
+                current_roi,
+                float(color_config.get("hue_margin", 12.0)),
+                float(color_config.get("minimum_saturation", 90.0)),
+                float(color_config.get("maximum_value", 150.0)),
+                int(color_config.get("opening_kernel_size", 3)),
+            )
+            mask &= color_mask
+        darkened_mask = np.zeros(magnitude.shape, dtype=bool)
+        if darkening_config.get("enabled", False):
+            darkened_mask = darkening_mask(
+                previous_roi,
+                current_roi,
+                float(darkening_config.get("minimum_value_drop", 2.0)),
+                int(darkening_config.get("blur_kernel_size", 5)),
+            )
+            mask &= darkened_mask
         active_bleeding_box = None
         origin_shapes = []
         if annotations is not None:
@@ -240,16 +242,16 @@ def main() -> None:
 
         flow_bgr = flow_to_hsv_bgr(flow, magnitude_clip)
         magnitude_bgr = magnitude_to_bgr(magnitude, magnitude_clip)
-        instrument_mask_bgr = mask_to_bgr(instrument_mask)
-        flow_suppressed_bgr = flow_to_hsv_bgr(flow_suppressed, magnitude_clip)
+        color_mask_bgr = mask_to_bgr(color_mask)
+        darkened_mask_bgr = mask_to_bgr(darkened_mask)
         annotated_frame = draw_cvat_context(current_frame, active_bleeding_box, origin_shapes)
         dashboard = render_dashboard(
             annotated_frame,
             current_roi,
             flow_bgr,
             magnitude_bgr,
-            instrument_mask_bgr,
-            flow_suppressed_bgr,
+            color_mask_bgr,
+            darkened_mask_bgr,
             mask,
             bbox,
         )
