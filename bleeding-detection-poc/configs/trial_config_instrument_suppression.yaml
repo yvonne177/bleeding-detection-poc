@@ -1,0 +1,31 @@
+roi:
+  enabled: true
+  bbox:
+    x: 500
+    y: 300
+    width: 800
+    height: 500
+
+scoring:
+  magnitude_threshold: 2.0
+  instrument_suppression:
+    enabled: true
+    # Flow pixels at/above this magnitude are treated as instrument motion and zeroed
+    # out before the candidate mask is built. Must stay above liquid_motion_threshold.
+    instrument_motion_threshold: 4.0
+    # Candidate threshold applied to flow once instrument suppression is enabled.
+    liquid_motion_threshold: 0.5
+    dilation_kernel_size: 5
+    # Number of recent frames (including current) unioned into the instrument mask.
+    persistence_frames: 1
+  gravity:
+    enabled: true
+    vector:
+      x: 0.0
+      y: 1.0
+    minimum_alignment: 0.5
+
+visualization:
+  flow_magnitude_clip: 15.0
+  overlay_alpha: 0.45
+  output_codec: mp4v

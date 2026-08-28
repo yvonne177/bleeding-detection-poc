@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -17,11 +18,17 @@ from src.flow.neuflow_v2 import NeuFlowV2Estimator
 from src.preprocessing.bbox_crop import BoundingBox
 from src.preprocessing.cvat_annotations import CvatAnnotations
 from src.scoring.gravity_alignment import gravity_alignment
+from src.scoring.instrument_suppression import (
+    InstrumentMaskTracker,
+    instrument_mask_from_magnitude,
+    suppress_instrument_flow,
+)
 from src.scoring.magnitude_score import candidate_mask, flow_magnitude
 from src.visualization.render_video import (
     draw_cvat_context,
     flow_to_hsv_bgr,
     full_frame_overlay,
+    mask_to_bgr,
     magnitude_to_bgr,
     render_dashboard,
 )
@@ -40,8 +47,8 @@ def parse_args() -> argparse.Namespace:
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Inference device; defaults to CUDA when available, otherwise CPU.",
     )
-    parser.add_argument("--start-frame", type=int, help="Override the first CVAT-annotated frame.")
-    parser.add_argument("--end-frame", type=int, help="Override the exclusive CVAT-annotated ending frame.")
+    parser.add_argument("--start-frame", type=int, help="First source frame to export; defaults to 0. Annotations stay keyed to source frame indices.")
+    parser.add_argument("--end-frame", type=int, help="Exclusive last source frame to export; defaults to the full video length.")
     parser.add_argument("--save-flow", action="store_true", help="Save each ROI flow as compressed NPZ.")
     parser.add_argument("--save-overlay", action="store_true", help="Also save an original-frame overlay MP4.")
     parser.add_argument("--cvat-annotations", type=Path, help="CVAT JSON export with bleeding-area and blood-origin tracks.")
@@ -84,6 +91,36 @@ def latency_summary(latencies_ms: list[float]) -> str:
     )
 
 
+def write_frame_manifest(
+    *,
+    args: argparse.Namespace,
+    overlay_path: Path,
+    source_fps: float,
+    start_frame: int,
+    end_frame: int,
+    written_source_frames: list[int],
+) -> Path:
+    manifest_path = args.output.with_name(f"{args.output.stem}_frame_manifest.json")
+    manifest = {
+        "description": (
+            "Output frame i of the dashboard and overlay videos corresponds to "
+            "source_frames[i] in the source video, which equals CVAT annotation frame "
+            "source_frames[i]. With the default full-video range, source_frames[i] == i."
+        ),
+        "source_video": str(args.input),
+        "dashboard_video": str(args.output),
+        "overlay_video": str(overlay_path) if args.save_overlay else None,
+        "source_fps": source_fps,
+        "requested_start_frame": start_frame,
+        "requested_end_frame": end_frame,
+        "output_frame_count": len(written_source_frames),
+        "source_frames": written_source_frames,
+    }
+    with manifest_path.open("w", encoding="utf-8") as stream:
+        json.dump(manifest, stream, indent=2)
+    return manifest_path
+
+
 def main() -> None:
     args = parse_args()
     resolve_run_paths(args)
@@ -99,6 +136,9 @@ def main() -> None:
     scoring = trial_config["scoring"]
     visualization = trial_config["visualization"]
     magnitude_clip = float(visualization["flow_magnitude_clip"])
+    instrument_config = scoring.get("instrument_suppression", {})
+    instrument_suppression_enabled = bool(instrument_config.get("enabled", False))
+    instrument_tracker = InstrumentMaskTracker(int(instrument_config.get("persistence_frames", 1)))
 
     capture = cv2.VideoCapture(str(args.input))
     if not capture.isOpened():
@@ -108,31 +148,35 @@ def main() -> None:
     frame_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     annotations = None
+    annotated_start = annotated_end = None
     if args.cvat_annotations is not None:
         annotations = CvatAnnotations(args.cvat_annotations, args.cvat_task)
         annotated_start, annotated_end = annotations.annotated_frame_range()
-        start_frame = args.start_frame if args.start_frame is not None else annotated_start
-        end_frame = args.end_frame if args.end_frame is not None else annotated_end
-    else:
-        start_frame = args.start_frame if args.start_frame is not None else 0
-        end_frame = args.end_frame if args.end_frame is not None else frame_count
+    # Default to the whole source video so output frame i stays equal to source frame i.
+    start_frame = args.start_frame if args.start_frame is not None else 0
+    end_frame = args.end_frame if args.end_frame is not None else frame_count
     if start_frame < 0 or end_frame <= start_frame or end_frame > frame_count:
         raise ValueError(f"Select frames within [0, {frame_count}] with an end frame greater than the start frame.")
     if annotations is not None:
         bbox = annotations.fixed_roi_for_range(
-            start_frame, end_frame, frame_width, frame_height, args.cvat_roi_padding
+            annotated_start, annotated_end, frame_width, frame_height, args.cvat_roi_padding
         )
-        print(f"CVAT annotated frame range: [{annotated_start}, {annotated_end})")
-        print(f"Selected source-frame range: [{start_frame}, {end_frame})")
+        print(annotations.describe_frame_mapping())
+        print(f"CVAT annotated frame range in source frames: [{annotated_start}, {annotated_end})")
+        print(f"Exported source-frame range: [{start_frame}, {end_frame})")
         print(f"Fixed NeuFlow ROI from CVAT bleeding-area track: {bbox}")
+        if annotated_end > frame_count:
+            print(f"Warning: annotations reference source frame {annotated_end - 1}, past the last video frame {frame_count - 1}.")
     else:
         bbox = BoundingBox.from_config(trial_config["roi"]["bbox"])
     estimator = NeuFlowV2Estimator(model_config, args.device)
-    capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    ok, previous_frame = capture.read()
-    if not ok:
-        raise ValueError("No readable frame at --start-frame.")
-    previous_roi = bbox.crop(previous_frame)
+    # Read sequentially from frame 0 instead of seeking: compressed-video seeks can
+    # snap to the nearest keyframe, shifting frame content relative to CVAT frame indices.
+    for _ in range(start_frame):
+        ok, _ = capture.read()
+        if not ok:
+            raise ValueError("Video ended before reaching --start-frame.")
+    previous_roi = None
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     flow_directory = args.output.parent / f"{args.output.stem}_flows"
@@ -143,27 +187,48 @@ def main() -> None:
     overlay_path = args.output.with_name(f"{args.output.stem}_overlay.mp4")
     latencies_ms: list[float] = []
     processed_frames = 0
-    source_index = start_frame + 1
+    written_source_frames: list[int] = []
+    source_index = start_frame
 
     while source_index < end_frame:
         ok, current_frame = capture.read()
         if not ok:
             break
         current_roi = bbox.crop(current_frame)
-        if estimator.device.type == "cuda":
-            torch.cuda.synchronize()
-        started = time.perf_counter()
-        flow = estimator.estimate(previous_roi, current_roi)
-        if estimator.device.type == "cuda":
-            torch.cuda.synchronize()
-        latencies_ms.append((time.perf_counter() - started) * 1000.0)
+        if previous_roi is None:
+            # First emitted frame has no predecessor, so report zero flow instead of dropping it.
+            flow = np.zeros((current_roi.shape[0], current_roi.shape[1], 2), dtype=np.float32)
+        else:
+            if estimator.device.type == "cuda":
+                torch.cuda.synchronize()
+            started = time.perf_counter()
+            flow = estimator.estimate(previous_roi, current_roi)
+            if estimator.device.type == "cuda":
+                torch.cuda.synchronize()
+            latencies_ms.append((time.perf_counter() - started) * 1000.0)
+            processed_frames += 1
 
+        # Preserve the raw NeuFlow flow/magnitude; only a suppressed copy feeds the candidate mask.
         magnitude = flow_magnitude(flow)
-        mask = candidate_mask(magnitude, float(scoring["magnitude_threshold"]))
+        instrument_mask = np.zeros(magnitude.shape, dtype=bool)
+        flow_suppressed = flow
+        if instrument_suppression_enabled:
+            fast_mask = instrument_mask_from_magnitude(
+                magnitude,
+                float(instrument_config.get("instrument_motion_threshold", 4.0)),
+                int(instrument_config.get("dilation_kernel_size", 5)),
+            )
+            instrument_mask = instrument_tracker.update(fast_mask)
+            flow_suppressed = suppress_instrument_flow(flow, instrument_mask)
+            liquid_threshold = float(instrument_config.get("liquid_motion_threshold", scoring["magnitude_threshold"]))
+        else:
+            liquid_threshold = float(scoring["magnitude_threshold"])
+        magnitude_suppressed = flow_magnitude(flow_suppressed)
+        mask = candidate_mask(magnitude_suppressed, liquid_threshold)
         gravity = scoring.get("gravity", {})
         if gravity.get("enabled", False):
             vector = gravity["vector"]
-            alignment = gravity_alignment(flow, float(vector["x"]), float(vector["y"]))
+            alignment = gravity_alignment(flow_suppressed, float(vector["x"]), float(vector["y"]))
             mask &= alignment >= float(gravity["minimum_alignment"])
         active_bleeding_box = None
         origin_shapes = []
@@ -175,8 +240,19 @@ def main() -> None:
 
         flow_bgr = flow_to_hsv_bgr(flow, magnitude_clip)
         magnitude_bgr = magnitude_to_bgr(magnitude, magnitude_clip)
+        instrument_mask_bgr = mask_to_bgr(instrument_mask)
+        flow_suppressed_bgr = flow_to_hsv_bgr(flow_suppressed, magnitude_clip)
         annotated_frame = draw_cvat_context(current_frame, active_bleeding_box, origin_shapes)
-        dashboard = render_dashboard(annotated_frame, current_roi, flow_bgr, magnitude_bgr, mask, bbox)
+        dashboard = render_dashboard(
+            annotated_frame,
+            current_roi,
+            flow_bgr,
+            magnitude_bgr,
+            instrument_mask_bgr,
+            flow_suppressed_bgr,
+            mask,
+            bbox,
+        )
         if dashboard_writer is None:
             height, width = dashboard.shape[:2]
             fourcc = cv2.VideoWriter_fourcc(*visualization.get("output_codec", "mp4v"))
@@ -186,6 +262,7 @@ def main() -> None:
             if args.save_overlay:
                 overlay_writer = cv2.VideoWriter(str(overlay_path), fourcc, source_fps, (current_frame.shape[1], current_frame.shape[0]))
         dashboard_writer.write(dashboard)
+        written_source_frames.append(source_index)
         if overlay_writer is not None:
             overlay = full_frame_overlay(annotated_frame, flow_bgr, mask, bbox, float(visualization["overlay_alpha"]))
             overlay_writer.write(overlay)
@@ -193,7 +270,6 @@ def main() -> None:
             np.savez_compressed(flow_directory / f"flow_{source_index:06d}.npz", flow=flow)
 
         previous_roi = current_roi
-        processed_frames += 1
         source_index += 1
 
     capture.release()
@@ -203,12 +279,21 @@ def main() -> None:
         overlay_writer.release()
     if not latencies_ms:
         raise ValueError("No consecutive frames were processed. Increase the selected frame range.")
+    manifest_path = write_frame_manifest(
+        args=args,
+        overlay_path=overlay_path,
+        source_fps=source_fps,
+        start_frame=start_frame,
+        end_frame=end_frame,
+        written_source_frames=written_source_frames,
+    )
     print(f"Source video FPS: {source_fps:.2f}")
     print(f"Processed frame pairs: {processed_frames}")
     print(latency_summary(latencies_ms))
     print(f"Dashboard video: {args.output}")
     if args.save_overlay:
         print(f"Full-frame overlay: {overlay_path}")
+    print(f"Frame manifest: {manifest_path}")
 
 
 if __name__ == "__main__":

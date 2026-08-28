@@ -1,29 +1,33 @@
-# NeuFlow v2 Surgical Bleeding Motion POC
+# NeuFlow v2 ROI Optical-Flow Pipeline
 
-This proof of concept tests pretrained NeuFlow v2 on surgical video. It measures **qualitative optical-flow behavior and runtime**, not bleeding-detection accuracy. There are no hand-annotated masks, so this project intentionally contains no IoU, precision/recall, training, fine-tuning, or alternative optical-flow baselines.
+This project runs pretrained NeuFlow v2 on video inside a fixed region of interest (ROI). It measures **qualitative optical-flow behavior and runtime**; it is not a general-purpose detector or an accuracy benchmark. Adapt the ROI, scoring rules, annotations, and visualization settings to your video domain.
 
 ## What it does
 
 For every consecutive frame pair, the fixed bounding box is cropped from the original frame **before** NeuFlow inference. The two crops are resized to NeuFlow's configured input size, inferred, and the dense flow is resized back to the original crop size with separate horizontal and vertical displacement scaling. Flow uses `H x W x 2` arrays where `flow[..., 0]` is `dx` rightward and `flow[..., 1]` is `dy` downward.
 
-The dashboard MP4 shows the full source frame with its ROI, then the cropped ROI, HSV optical flow, magnitude map, and candidate mask. Hue encodes direction; saturation/value increase with flow magnitude. Candidate mask pixels satisfy the configured magnitude threshold, optionally with the configured gravity-alignment threshold. This is candidate motion only, not confirmed bleeding.
+The dashboard MP4 shows the full source frame with its ROI, then the cropped ROI, HSV optical flow, magnitude map, and candidate mask. Hue encodes direction; saturation/value increase with flow magnitude. Candidate mask pixels satisfy the configured magnitude threshold, optionally with the configured directional-alignment threshold. This is candidate motion only, not a confirmed event or class prediction.
 
-When CVAT inputs are supplied, the yellow rectangle is the one fixed NeuFlow crop for the selected test interval. The red rectangle is the manually annotated `bleeding-area` boundary used to gate the candidate mask, and green polylines or points show the manually annotated `blood-origin` context. These annotations guide visualization and ROI selection only; they are not used to calculate accuracy.
+When compatible CVAT inputs are supplied, the yellow rectangle is the one fixed NeuFlow crop for the selected interval. Annotated regions can gate the candidate mask, while context shapes can be displayed on the output. These annotations guide visualization and ROI selection only; they are not used to calculate accuracy.
 
 ## Install
 
 Create the Python environment and install the base packages:
 
 ```powershell
-cd bleeding-detection-poc
+$PROJECT_DIR = "C:\path\to\project"
+Set-Location $PROJECT_DIR
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+Run the commands below from the project root: the directory that contains `scripts`, `configs`, `data`, and `src`. If the checkout has a wrapper directory around that project root, change into the inner directory first and reference the environment with its relative path.
+
 For every new PowerShell terminal, run project commands through `.venv\Scripts\python.exe`. This does not require activating the environment, so it works when PowerShell blocks `Activate.ps1` scripts:
 
 ```powershell
-cd C:\Users\yiyua\Downloads\NeuFlow_Test\bleeding-detection-poc
+$PROJECT_DIR = "C:\path\to\project"
+Set-Location $PROJECT_DIR
 .\.venv\Scripts\python.exe scripts\run_neuflow.py --help
 ```
 
@@ -34,23 +38,23 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-NeuFlow v2 is used from its official repository. Clone it alongside this project; the supplied model configuration already points to that sibling checkout:
+NeuFlow v2 is used from its upstream repository. Clone it alongside this project, or set `model.repository_path` in the model configuration to an existing checkout:
 
 ```powershell
 cd ..
 git clone https://github.com/neufieldrobotics/NeuFlow_v2.git
-cd bleeding-detection-poc
+Set-Location $PROJECT_DIR
 ```
 
-The official repository documents PyTorch 2.0+ and its pretrained mixed model checkpoint. Set `model.repository_path` in `configs/model_neuflow_v2.yaml` only when your checkout is elsewhere.
+Use the PyTorch and checkpoint versions supported by the upstream NeuFlow repository. Set `model.repository_path` in the model configuration when the checkout is elsewhere.
 
 ## Checkpoint
 
-Place the official `neuflow_mixed.pth` at `checkpoints/neuflow_mixed.pth`, or change only `checkpoint.path` in `configs/model_neuflow_v2.yaml`. The checkpoint location is never hardcoded in Python.
+Place a compatible NeuFlow checkpoint at the path configured by `checkpoint.path`, or update that setting in the model configuration. The checkpoint location is not hardcoded in Python.
 
 ## Configure
 
-Edit `configs/trial_config.yaml` to set the fixed `roi.bbox` in original-frame pixels. It must be fully inside the source video frame and remains unchanged for every frame pair. Configure the NeuFlow resize resolution in `configs/model_neuflow_v2.yaml`; both dimensions must be divisible by 16.
+Edit the trial configuration to set the fixed `roi.bbox` in original-frame pixels. It must be fully inside the source video frame and remains unchanged for every frame pair. Configure the NeuFlow resize resolution in the model configuration; both dimensions must be divisible by 16.
 
 Set the candidate magnitude threshold, optional downward gravity vector, minimum alignment, visualization magnitude clip, and overlay opacity in the trial config.
 
@@ -58,10 +62,10 @@ Set the candidate magnitude threshold, optional downward gravity vector, minimum
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_neuflow.py `
-  --input data/raw_videos/example.mp4 `
-  --output results/example_neuflow.mp4 `
-  --config configs/trial_config.yaml `
-  --model-config configs/model_neuflow_v2.yaml `
+  --input path/to/input.mp4 `
+  --output path/to/output.mp4 `
+  --config path/to/trial_config.yaml `
+  --model-config path/to/model_config.yaml `
   --device cuda `
   --start-frame 0 `
   --end-frame 300 `
@@ -69,27 +73,27 @@ Set the candidate magnitude threshold, optional downward gravity vector, minimum
   --save-overlay
 ```
 
-Use `--device cpu` when CUDA is unavailable. `--end-frame` is exclusive, so the example processes up to 299 consecutive frame pairs. `--save-flow` writes ROI-native dense flow arrays as compressed NPZ files, and `--save-overlay` creates a second full-frame MP4 with colored candidate flow only inside the bounding box.
+Use `--device cpu` when CUDA is unavailable. Frame arguments are zero-based source-video indices: `--start-frame N` selects the first source frame, and `--end-frame M` is exclusive. The runner reads frame `N` as the previous frame and writes flow for source frames `N + 1` through `M - 1`, producing `M - N - 1` consecutive pairs when all reads succeed. For example, `--start-frame 100 --end-frame 250` processes pairs `(100,101)` through `(248,249)` and writes 149 output frames. Without CVAT, the default range is the complete video. With CVAT, the default range is the annotated range. `--save-flow` writes ROI-native dense flow arrays as compressed NPZ files, and `--save-overlay` creates a second full-frame MP4 with colored candidate flow only inside the bounding box.
 
-## Run With Existing CVAT Files
+## Run With CVAT Files
 
-For standard filenames, pass only the run identifier. The runner resolves the video, CVAT export, CVAT task file, and result path automatically, then exports the contiguous source-video interval from the first visible annotation through the last one.
+For a project using the runner's standard naming convention, pass an identifier. The runner resolves the video, optional CVAT export, optional CVAT task file, and result path automatically. Otherwise, pass explicit `--input`, `--output`, and annotation paths.
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\run_neuflow.py `
-  --run run4 `
+  --run example-id `
   --device cuda `
   --cvat-roi-padding 16 `
   --save-flow `
   --save-overlay
 ```
 
-`--run run4` resolves `data/raw_videos/run4_video.mp4`, `data/annotations/cvat_exports/run4_annotations.json`, `data/annotations/cvat_tasks/run4_task.json`, and `results/run4_neuflow.mp4`. Use the same command for any other run number after adding files with the matching names. Add `--start-frame` and `--end-frame` only to override the automatic range for a shorter trial. For the supplied Run 4 files, automatic export covers frames `[160, 2377)`. For the first cautery-pass review, override the range with `--start-frame 160 --end-frame 460`. For the post-cautery ooze review, use `--start-frame 2026 --end-frame 2377`. Keep each exploratory run to 200–500 frames. The fixed NeuFlow ROI is computed once from all manual `bleeding-area` rectangles in the selected interval, so flow is never inferred on a full frame and then cropped afterward.
+With CVAT annotations, the automatic range is the annotated interval. Add `--start-frame` and `--end-frame` to override it for a shorter trial. Keep exploratory intervals long enough to contain useful motion while respecting the available compute. The fixed ROI is computed once from annotations in the selected interval, so flow is inferred on the ROI rather than on a full frame and cropped afterward.
 
 ## Runtime output
 
-The console reports source video FPS, processed frame pairs, and NeuFlow-only mean, median, p95 latency, and inference FPS. Timing starts immediately before the model adapter runs and stops after CUDA synchronization (when applicable), so video decoding, cropping, scoring, disk I/O, and rendering are excluded.
+The console reports source video FPS, processed frame pairs, and NeuFlow-only mean, median, p95 latency, and inference FPS. A frame manifest records the requested range and the exact source frame index for every output frame. Timing starts immediately before the model adapter runs and stops after CUDA synchronization (when applicable), so video decoding, cropping, scoring, disk I/O, and rendering are excluded.
 
 ## Limitations
 
-Optical flow reflects apparent motion, including instrument movement, camera motion, smoke, reflections, tissue deformation, and fluid motion. Without ground truth, this POC cannot establish accuracy or clinical reliability. Review the visual outputs qualitatively and use the runtime figures only as hardware- and configuration-specific benchmarks.
+Optical flow reflects apparent motion, including camera or object movement, scene deformation, lighting changes, reflections, and fluid motion. Without representative ground truth, this pipeline cannot establish accuracy or operational reliability. Review visual outputs qualitatively and use runtime figures only as hardware- and configuration-specific benchmarks.

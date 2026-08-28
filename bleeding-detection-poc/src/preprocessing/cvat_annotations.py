@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,9 @@ class CvatAnnotations:
         document = json.loads(annotation_path.read_text(encoding="utf-8"))
         if not isinstance(document, list) or len(document) != 1:
             raise ValueError("Expected a single CVAT JSON annotation document.")
+        self.frame_offset = 0
+        self.frame_step = 1
+        self.last_source_frame: int | None = None
         if task_path is not None:
             task = json.loads(task_path.read_text(encoding="utf-8"))
             label_names = {label["name"] for label in task.get("labels", [])}
@@ -39,6 +43,7 @@ class CvatAnnotations:
             missing = required - label_names
             if missing:
                 raise ValueError(f"CVAT task is missing required labels: {sorted(missing)}")
+            self._read_frame_mapping(task.get("data", {}))
 
         tracks = document[0].get("tracks", [])
         self.bleeding_tracks = self._tracks_for_labels(tracks, {"bleeding-area"}, {"rectangle"})
@@ -48,8 +53,24 @@ class CvatAnnotations:
         if not self.bleeding_tracks:
             raise ValueError("CVAT export contains no bleeding-area rectangle annotations.")
 
-    @staticmethod
-    def _tracks_for_labels(tracks: list[dict], labels: set[str], allowed_types: set[str]) -> list[CvatTrack]:
+    def _read_frame_mapping(self, data: dict) -> None:
+        """CVAT frame f maps to source frame start_frame + step * f, where step comes from frame_filter."""
+        self.frame_offset = int(data.get("start_frame", 0) or 0)
+        step_match = re.search(r"step\s*=\s*(\d+)", str(data.get("frame_filter", "")))
+        if step_match:
+            self.frame_step = max(1, int(step_match.group(1)))
+        stop_frame = data.get("stop_frame")
+        if stop_frame is not None:
+            self.last_source_frame = int(stop_frame)
+
+    def _to_source_frame(self, cvat_frame: int) -> int:
+        return self.frame_offset + self.frame_step * cvat_frame
+
+    def describe_frame_mapping(self) -> str:
+        span = "open-ended" if self.last_source_frame is None else f"last source frame {self.last_source_frame}"
+        return f"CVAT frame -> source frame: offset={self.frame_offset}, step={self.frame_step}, {span}"
+
+    def _tracks_for_labels(self, tracks: list[dict], labels: set[str], allowed_types: set[str]) -> list[CvatTrack]:
         parsed_tracks = []
         for track in tracks:
             label = track.get("label")
@@ -61,7 +82,7 @@ class CvatAnnotations:
                     shapes.append(
                         CvatShape(
                             label=label,
-                            frame=int(shape["frame"]),
+                            frame=self._to_source_frame(int(shape["frame"])),
                             shape_type=shape["type"],
                             points=np.asarray(shape["points"], dtype=np.float32).reshape(-1, 2),
                             outside=bool(shape.get("outside", False)),
@@ -71,18 +92,20 @@ class CvatAnnotations:
                 parsed_tracks.append(CvatTrack(label=label, shapes=sorted(shapes, key=lambda shape: shape.frame)))
         return parsed_tracks
 
-    @staticmethod
-    def _interpolated_shape(shapes: list[CvatShape], frame_index: int) -> CvatShape | None:
+    def _interpolated_shape(self, shapes: list[CvatShape], frame_index: int) -> CvatShape | None:
         index = bisect_right([shape.frame for shape in shapes], frame_index) - 1
         if index < 0:
             return None
         current = shapes[index]
-        if current.outside or index == len(shapes) - 1:
-            return None if current.outside else current
+        if current.outside:
+            return None
+        if index == len(shapes) - 1:
+            # CVAT holds an unterminated track to the end of the task, never past it.
+            if self.last_source_frame is not None and frame_index > self.last_source_frame:
+                return None
+            return current
         following = shapes[index + 1]
         if current.shape_type != following.shape_type or current.points.shape != following.points.shape:
-            return current
-        if following.outside:
             return current
         fraction = (frame_index - current.frame) / (following.frame - current.frame)
         return CvatShape(

@@ -26,6 +26,10 @@ def magnitude_to_bgr(magnitude: np.ndarray, magnitude_clip: float) -> np.ndarray
     return cv2.applyColorMap(image, cv2.COLORMAP_TURBO)
 
 
+def mask_to_bgr(mask: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor((mask.astype(np.uint8) * 255), cv2.COLOR_GRAY2BGR)
+
+
 def draw_bbox(frame: np.ndarray, bbox: BoundingBox) -> np.ndarray:
     result = frame.copy()
     cv2.rectangle(result, (bbox.x, bbox.y), (bbox.x + bbox.width, bbox.y + bbox.height), (0, 255, 255), 2)
@@ -65,18 +69,35 @@ def full_frame_overlay(frame: np.ndarray, flow_bgr: np.ndarray, mask: np.ndarray
     return draw_bbox(result, bbox)
 
 
-def render_dashboard(frame: np.ndarray, roi: np.ndarray, flow_bgr: np.ndarray, magnitude_bgr: np.ndarray, mask: np.ndarray, bbox: BoundingBox) -> np.ndarray:
+def render_dashboard(
+    frame: np.ndarray,
+    roi: np.ndarray,
+    flow_bgr: np.ndarray,
+    magnitude_bgr: np.ndarray,
+    instrument_mask_bgr: np.ndarray,
+    flow_suppressed_bgr: np.ndarray,
+    mask: np.ndarray,
+    bbox: BoundingBox,
+) -> np.ndarray:
     top = draw_bbox(frame, bbox)
     panel_height, panel_width = top.shape[:2]
     panel_height = max(1, panel_height // 3)
-    panel_width = panel_width // 2
-    mask_bgr = cv2.cvtColor((mask.astype(np.uint8) * 255), cv2.COLOR_GRAY2BGR)
-    panels = [roi, flow_bgr, magnitude_bgr, mask_bgr]
-    labels = ["Cropped ROI", "NeuFlow v2", "Magnitude", "Candidate mask"]
+    panel_width = panel_width // 3
+    mask_bgr = mask_to_bgr(mask)
+    panels = [roi, flow_bgr, magnitude_bgr, instrument_mask_bgr, flow_suppressed_bgr, mask_bgr]
+    labels = [
+        "Cropped ROI",
+        "NeuFlow v2 (raw)",
+        "Raw magnitude",
+        "Instrument mask",
+        "Flow after suppression",
+        "Candidate mask",
+    ]
     rendered = []
     for panel, label in zip(panels, labels):
         panel = cv2.resize(panel, (panel_width, panel_height), interpolation=cv2.INTER_AREA)
-        cv2.putText(panel, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(panel, label, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
         rendered.append(panel)
-    bottom = np.vstack([np.hstack(rendered[:2]), np.hstack(rendered[2:])])
+    bottom = np.vstack([np.hstack(rendered[:3]), np.hstack(rendered[3:])])
+    top = cv2.resize(top, (bottom.shape[1], top.shape[0] * bottom.shape[1] // top.shape[1]), interpolation=cv2.INTER_AREA)
     return np.vstack([top, bottom])
