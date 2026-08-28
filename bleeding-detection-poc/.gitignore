@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+checkpoints/*.pth
+checkpoints/*.pt
+checkpoints/*.ckpt
+data/raw_videos/*
+!data/raw_videos/.gitkeep
+results/*
+!results/.gitkeep

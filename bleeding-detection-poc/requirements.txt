@@ -1,0 +1,6 @@
+numpy>=1.26
+opencv-python>=4.9
+PyYAML>=6.0
+torch>=2.1
+torchvision>=0.16
+huggingface-hub>=0.20

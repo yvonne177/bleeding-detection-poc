@@ -1,0 +1,3 @@
+[submodule "NeuFlow_v2"]
+	path = NeuFlow_v2
+	url = https://github.com/neufieldrobotics/NeuFlow_v2.git

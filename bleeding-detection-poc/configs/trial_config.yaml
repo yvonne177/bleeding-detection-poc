@@ -1,0 +1,21 @@
+roi:
+  enabled: true
+  bbox:
+    x: 500
+    y: 300
+    width: 800
+    height: 500
+
+scoring:
+  magnitude_threshold: 2.0
+  gravity:
+    enabled: true
+    vector:
+      x: 0.0
+      y: 1.0
+    minimum_alignment: 0.5
+
+visualization:
+  flow_magnitude_clip: 15.0
+  overlay_alpha: 0.45
+  output_codec: mp4v

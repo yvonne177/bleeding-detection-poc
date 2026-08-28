@@ -1,0 +1,10 @@
+checkpoint:
+  path: checkpoints/neuflow_mixed.pth
+
+input:
+  width: 512
+  height: 384
+
+model:
+  # Checkout of the official NeuFlow_v2 repository, relative to this project.
+  repository_path: ../NeuFlow_v2
