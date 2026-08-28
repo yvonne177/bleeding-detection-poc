@@ -8,6 +8,8 @@ For every consecutive frame pair, the fixed bounding box is cropped from the ori
 
 The dashboard MP4 shows the full source frame with its ROI, then the cropped ROI, HSV optical flow, magnitude map, and candidate mask. Hue encodes direction; saturation/value increase with flow magnitude. Candidate mask pixels satisfy the configured magnitude threshold, optionally with the configured gravity-alignment threshold. This is candidate motion only, not confirmed bleeding.
 
+When CVAT inputs are supplied, the yellow rectangle is the one fixed NeuFlow crop for the selected test interval. The red rectangle is the manually annotated `bleeding-area` boundary used to gate the candidate mask, and green polylines or points show the manually annotated `blood-origin` context. These annotations guide visualization and ROI selection only; they are not used to calculate accuracy.
+
 ## Install
 
 Create the Python environment and install the base packages:
@@ -68,6 +70,21 @@ Set the candidate magnitude threshold, optional downward gravity vector, minimum
 ```
 
 Use `--device cpu` when CUDA is unavailable. `--end-frame` is exclusive, so the example processes up to 299 consecutive frame pairs. `--save-flow` writes ROI-native dense flow arrays as compressed NPZ files, and `--save-overlay` creates a second full-frame MP4 with colored candidate flow only inside the bounding box.
+
+## Run With Existing CVAT Files
+
+For standard filenames, pass only the run identifier. The runner resolves the video, CVAT export, CVAT task file, and result path automatically, then exports the contiguous source-video interval from the first visible annotation through the last one.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_neuflow.py `
+  --run run4 `
+  --device cuda `
+  --cvat-roi-padding 16 `
+  --save-flow `
+  --save-overlay
+```
+
+`--run run4` resolves `data/raw_videos/run4_video.mp4`, `data/annotations/cvat_exports/run4_annotations.json`, `data/annotations/cvat_tasks/run4_task.json`, and `results/run4_neuflow.mp4`. Use the same command for any other run number after adding files with the matching names. Add `--start-frame` and `--end-frame` only to override the automatic range for a shorter trial. For the supplied Run 4 files, automatic export covers frames `[160, 2377)`. For the first cautery-pass review, override the range with `--start-frame 160 --end-frame 460`. For the post-cautery ooze review, use `--start-frame 2026 --end-frame 2377`. Keep each exploratory run to 200–500 frames. The fixed NeuFlow ROI is computed once from all manual `bleeding-area` rectangles in the selected interval, so flow is never inferred on a full frame and then cropped afterward.
 
 ## Runtime output
 

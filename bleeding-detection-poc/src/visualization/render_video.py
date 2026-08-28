@@ -5,6 +5,12 @@ import numpy as np
 
 from src.preprocessing.bbox_crop import BoundingBox
 
+CVAT_COLORS = {
+    "bleeding-area": (245, 61, 61),
+    "blood-origin": (61, 245, 61),
+    "bleed-origin": (61, 245, 61),
+}
+
 
 def flow_to_hsv_bgr(flow: np.ndarray, magnitude_clip: float) -> np.ndarray:
     magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
@@ -23,6 +29,32 @@ def magnitude_to_bgr(magnitude: np.ndarray, magnitude_clip: float) -> np.ndarray
 def draw_bbox(frame: np.ndarray, bbox: BoundingBox) -> np.ndarray:
     result = frame.copy()
     cv2.rectangle(result, (bbox.x, bbox.y), (bbox.x + bbox.width, bbox.y + bbox.height), (0, 255, 255), 2)
+    return result
+
+
+def draw_cvat_context(frame: np.ndarray, bleeding_box: BoundingBox | None, origin_shapes: list) -> np.ndarray:
+    """Draw CVAT bleeding boundaries and interpolated origin tracks."""
+    result = frame.copy()
+    if bleeding_box is not None:
+        cv2.rectangle(
+            result,
+            (bleeding_box.x, bleeding_box.y),
+            (bleeding_box.x + bleeding_box.width, bleeding_box.y + bleeding_box.height),
+            CVAT_COLORS["bleeding-area"],
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(result, "bleeding-area", (bleeding_box.x, max(24, bleeding_box.y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, CVAT_COLORS["bleeding-area"], 2, cv2.LINE_AA)
+    for shape in origin_shapes:
+        points = np.rint(shape.points).astype(np.int32)
+        color = CVAT_COLORS.get(shape.label, (0, 255, 255))
+        if shape.shape_type == "polyline":
+            cv2.polylines(result, [points], False, color, 3, cv2.LINE_AA)
+            label_point = tuple(points[0])
+        else:
+            label_point = tuple(points[0])
+            cv2.drawMarker(result, label_point, color, cv2.MARKER_CROSS, 18, 3, cv2.LINE_AA)
+        cv2.putText(result, shape.label, (label_point[0] + (12 if shape.shape_type == "points" else 0), max(24, label_point[1] - 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
     return result
 
 
