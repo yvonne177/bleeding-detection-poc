@@ -8,10 +8,7 @@ checkpoints/*.pt
 checkpoints/*.ckpt
 data/raw_videos/*
 !data/raw_videos/.gitkeep
-data/annotations/cvat_exports/*
-!data/annotations/cvat_exports/.gitkeep
-data/annotations/cvat_tasks/*
-!data/annotations/cvat_tasks/.gitkeep
+data/annotations/cvat_tasks/**/*.zip
 data/annotations/normalized/*
 !data/annotations/normalized/.gitkeep
 results/*
